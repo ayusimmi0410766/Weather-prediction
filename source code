@@ -1,0 +1,150 @@
+# Install required packages (uncomment if running in Colab or first time)
+# !pip install gTTS requests pandas matplotlib fpdf
+
+import requests
+import pandas as pd
+from gtts import gTTS
+import matplotlib.pyplot as plt
+from fpdf import FPDF
+import re
+from matplotlib.patches import Patch
+
+# API details
+API_KEY = "f458243d8a045905f3536cb56862632e"
+BASE_URL = "http://api.openweathermap.org/data/2.5/forecast"
+
+# Remove emojis from text
+def remove_emojis(text):
+    return re.sub(r'[^\x00-\x7F]+', '', text)
+
+# Fetch weather data from OpenWeather
+def fetch_weather_data(city):
+    params = {"q": city, "appid": API_KEY, "units": "metric"}
+    response = requests.get(BASE_URL, params=params)
+    if response.status_code == 200:
+        return response.json()
+    else:
+        print("Error: Could not fetch data. Please check the city name.")
+        return None
+
+# Generate graphs, audio, and PDFs
+def create_weather_pdf(data, city):
+    pdf_graphs = FPDF()
+    pdf_graphs.set_auto_page_break(auto=True, margin=15)
+
+    pdf_conditions = FPDF()
+    pdf_conditions.set_auto_page_break(auto=True, margin=15)
+
+    weather_summary = []
+    weather_conditions_summary = []
+
+    weather_data = []
+    for item in data['list']:
+        dt_txt = item['dt_txt']
+        main = item['main']
+        weather = item['weather'][0]
+        wind = item['wind']
+        weather_data.append({
+            "datetime": dt_txt,
+            "temp": main['temp'],
+            "cloudiness": item['clouds']['all'],
+            "precipitation": item.get('rain', {}).get('3h', 0),
+            "wind_speed": wind['speed'],
+            "gusts": wind.get('gust', 0),
+            "weather_desc": weather['description']
+        })
+
+    df = pd.DataFrame(weather_data)
+    df['date'] = pd.to_datetime(df['datetime']).dt.date
+    df['time'] = pd.to_datetime(df['datetime']).dt.time
+
+    for day in df['date'].unique():
+        day_data = df[df['date'] == day]
+        day_data['time_str'] = day_data['time'].astype(str)
+
+        # Graph 1: Temperature, cloudiness, precipitation
+        plt.figure(figsize=(12, 6))
+        plt.plot(day_data['time_str'], day_data['temp'], label="Temp (°C)", color='red', marker='o')
+        plt.plot(day_data['time_str'], day_data['cloudiness'], label="Cloudiness (%)", color='blue', marker='s')
+        plt.plot(day_data['time_str'], day_data['precipitation'], label="Precipitation (mm)", color='green', marker='^')
+        plt.title(f"Weather on {day}")
+        plt.xlabel("Time")
+        plt.ylabel("Values")
+        plt.xticks(rotation=45)
+        plt.legend()
+        plt.grid()
+        plt.tight_layout()
+        plt.savefig(f"weather_day_{day}_1.png")
+        plt.close()
+
+        # Graph 2: Activity Suggestions
+        activity_colors = ['orange' if c > 50 or p > 2 else 'green'
+                           for c, p in zip(day_data['cloudiness'], day_data['precipitation'])]
+        plt.figure(figsize=(12, 6))
+        plt.bar(day_data['time_str'], day_data['cloudiness'], color=activity_colors, alpha=0.6)
+        legend_elements = [Patch(facecolor='green', label='Outdoor'), Patch(facecolor='orange', label='Indoor')]
+        plt.legend(handles=legend_elements)
+        plt.title(f"Activity Suggestions on {day}")
+        plt.xlabel("Time")
+        plt.ylabel("Cloudiness & Suggestion")
+        plt.xticks(rotation=45)
+        plt.grid(True)
+        plt.tight_layout()
+        plt.savefig(f"weather_day_{day}_2.png")
+        plt.close()
+
+        # Add graphs to PDF
+        pdf_graphs.add_page()
+        pdf_graphs.set_font("Arial", size=12)
+        pdf_graphs.cell(200, 10, txt=f"Weather Forecast for {city} on {day}", ln=True, align='C')
+        pdf_graphs.image(f"weather_day_{day}_1.png", x=10, y=30, w=180)
+        pdf_graphs.ln(85)
+        pdf_graphs.cell(200, 10, txt="Graph 1: Conditions", ln=True, align='C')
+        pdf_graphs.image(f"weather_day_{day}_2.png", x=10, y=120, w=180)
+        pdf_graphs.ln(85)
+        pdf_graphs.cell(200, 10, txt="Graph 2: Activity Suggestions", ln=True, align='C')
+
+        # Audio and text summary
+        summary = f"Date: {day}. Avg Temp: {day_data['temp'].mean():.1f}°C. Weather: {day_data['weather_desc'].mode()[0]}."
+        weather_summary.append(summary)
+
+        condition_str = f"{day}: "
+        for _, row in day_data.iterrows():
+            condition_text = f"{row['time_str']} {row['temp']}°C {row['weather_desc']}, "
+            condition_str += remove_emojis(condition_text)
+        weather_conditions_summary.append(condition_str[:-2])
+
+    # Save PDFs
+    graphs_pdf = f"{city}_weather_graphs.pdf"
+    pdf_graphs.output(graphs_pdf)
+    print(f"📊 Graphs PDF saved as: {graphs_pdf}")
+
+    # Text-only PDF
+    pdf_conditions.add_page()
+    pdf_conditions.set_font("Arial", size=12)
+    pdf_conditions.cell(200, 10, txt=f"Weather Conditions for {city}", ln=True, align='C')
+    for condition in weather_conditions_summary:
+        pdf_conditions.ln(10)
+        pdf_conditions.cell(200, 10, txt=condition, ln=True, align='L')
+    condition_pdf = f"{city}_weather_conditions.pdf"
+    pdf_conditions.output(condition_pdf)
+    print(f"📄 Text Summary PDF saved as: {condition_pdf}")
+
+    # Audio summary
+    tts = gTTS("\n".join(weather_summary), lang='en')
+    audio_file = f"{city}_weather_summary.mp3"
+    tts.save(audio_file)
+    print(f"🔊 Audio summary saved as: {audio_file}")
+
+# Main program
+def main():
+    city = input("Enter city name: ")
+    print("Fetching weather data...")
+    data = fetch_weather_data(city)
+    if data:
+        print("Generating PDFs and audio...")
+        create_weather_pdf(data, city)
+        print("✅ All files generated successfully!")
+
+# Run the program
+main()
